@@ -1,0 +1,453 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(readr)
+library(skimr)
+library(dplyr)
+library(ggplot2)
+library(lfe)
+library(AER)
+library(car)
+library(tidyverse)
+library(tidyr)
+library(plm)
+library(stringr)
+library(patchwork)
+```
+
+
+H1: Table
+```{r}
+# Step 1: Import the datasets
+data <- read.csv("~/Desktop/pilot1/IndividualAOImetrics.csv", header = FALSE)
+data2 <- read.csv("~/Desktop/pilot1/IndividualAOImetrics (1).csv", header = FALSE)
+
+# Step 2: Set the second row as the header and remove the first two rows
+colnames(data) <- as.character(unlist(data[2, ]))
+data <- data[-c(1, 2), ]
+colnames(data2) <- as.character(unlist(data2[2, ]))
+data2 <- data2[-c(1, 2), ]
+combined_data <- rbind(data, data2)
+
+# Step 5: Remove rows
+combined_data <- combined_data %>%
+  filter(!(Info_Respondent_Name %in% c("0024", "6632a7976ac65354ad468c94")))
+
+# Step 6: Convert necessary columns to numeric using mutate_at
+combined_data <- combined_data %>%
+  mutate_at(vars(AOI_FixationMetrics_DwellsFixations,
+                 AOI_FixationMetrics_FixationCount,
+                 AOI_FixationMetrics_DwellTimeFixationMs,
+                 AOI_FixationMetrics_DurationFixation),
+            ~ suppressWarnings(as.numeric(.)))
+
+# rename
+combined_data <- combined_data %>%
+  rename(
+    "Dwells After Fixations" = "AOI_FixationMetrics_DwellsFixations",
+    "Fixation Count" = "AOI_FixationMetrics_FixationCount",
+    "DwellTime Fixation (ms)" = "AOI_FixationMetrics_DwellTimeFixationMs",
+    "Average Duration Per Fixation (ms)" = "AOI_FixationMetrics_DurationFixation"
+  )
+
+# Helper function to perform one-tailed Welch's t-test with dynamic "alternative" parameter and return a summary
+perform_one_tailed_t_test <- function(data, variable) {
+  verbal_data <- data %>%
+    filter(Info_Interval_Label == "verbal") %>%
+    pull(!!sym(variable))
+
+  visual_data <- data %>%
+    filter(Info_Interval_Label == "visual") %>%
+    pull(!!sym(variable))
+
+  # Check the number of valid observations in both groups
+  if (length(verbal_data) < 2 || length(visual_data) < 2) {
+    return(data.frame(Variable = variable, 
+                      T_Statistic = NA,
+                      P_Value = NA, 
+                      Mean_Verbal = mean(verbal_data, na.rm = TRUE),
+                      Mean_Visual = mean(visual_data, na.rm = TRUE),
+                      SD_Verbal = NA,
+                      SD_Visual = NA))
+  }
+  return(verbal_data, visual_data)
+}
+
+# Conduct one-tailed Welch's t-tests for the specified variables and store results in a table
+variable_list <- c("Dwells After Fixations",
+                   "Fixation Count",
+                   "DwellTime Fixation (ms)",
+                   "Average Duration Per Fixation (ms)")
+
+# Calculate the mean difference (verbal - visual) and its standard deviation
+calculate_mean_difference <- function(verbal_data, visual_data) {
+  # Compute the differences
+  differences <- verbal_data - visual_data
+  
+  # Calculate mean and standard deviation of differences
+  mean_diff <- mean(differences, na.rm = TRUE)
+  sd_diff <- sd(differences, na.rm = TRUE)
+  
+  return(c(mean_diff, sd_diff))
+}
+
+# Add mean difference and standard deviation difference to the results
+results_table <- do.call(rbind, lapply(variable_list, function(var) {
+  verbal_data <- combined_data %>%
+    filter(Info_Interval_Label == "verbal") %>%
+    pull(!!sym(var))
+
+  visual_data <- combined_data %>%
+    filter(Info_Interval_Label == "visual") %>%
+    pull(!!sym(var))
+
+  # Perform Welch's t-test
+  t_test_result <- t.test(verbal_data, visual_data, alternative = "greater", var.equal = FALSE)
+
+  # Mean difference and SD
+  mean_sd_diff <- calculate_mean_difference(verbal_data, visual_data)
+  
+  # Construct result row
+  result <- data.frame(
+    Variable = var,
+    T_Statistic = t_test_result$statistic,
+    P_Value = t_test_result$p.value,
+    Mean_Verbal = mean(verbal_data, na.rm = TRUE),
+    SD_Verbal = sd(verbal_data, na.rm = TRUE),
+    Mean_Visual = mean(visual_data, na.rm = TRUE),
+    SD_Visual = sd(visual_data, na.rm = TRUE),
+    Mean_Difference = mean_sd_diff[1],
+    SD_Difference = mean_sd_diff[2]
+  )
+  return(result)
+}))
+
+# Print the results table with mean difference and standard deviation
+print(results_table)
+write.csv(results_table, "~/Desktop/one_tailed_t_test_results.csv", row.names = TRUE)
+
+
+```
+
+H1: GRAPH
+
+
+```{r}
+# Load required packages
+library(ggplot2)
+library(dplyr)
+library(patchwork)  # For combining ggplot objects
+
+# Step 8: Modified function to include y-axis labels and updated styling
+plot_variable_with_legend <- function(variable_data, variable_name, y_label) {
+  # Check if the required columns have complete data
+  if (any(is.na(variable_data$Mean_Verbal) | is.na(variable_data$Mean_Visual) | 
+          is.na(variable_data$SD_Verbal) | is.na(variable_data$SD_Visual))) {
+    message(paste("Skipping plot for", variable_name, "due to missing values in data."))
+    return(NULL)
+  }
+
+  # Extract the p-value for the variable to determine significance
+  p_value <- as.numeric(variable_data$P_Value)
+
+  # Convert the data to a long format for ggplot
+  plot_data <- data.frame(
+    Condition = c("Verbal", "Visual"),
+    Mean = c(variable_data$Mean_Verbal, variable_data$Mean_Visual),
+    SD = c(variable_data$SD_Verbal, variable_data$SD_Visual)
+  )
+
+  # Rename the "Condition" values to "Verbal Stimuli" and "Visual Stimuli"
+  plot_data$Condition <- factor(plot_data$Condition, levels = c("Verbal", "Visual"), 
+                                labels = c("Verbal Stimuli", "Visual Stimuli"))
+
+  # Ensure that the data has exactly two rows (one for each condition)
+  if (nrow(plot_data) != 2) {
+    message(paste("Skipping plot for", variable_name, "due to incorrect data format."))
+    return(NULL)
+  }
+
+  # Calculate ymin and ymax for error bars
+  plot_data <- plot_data %>%
+    mutate(
+      ymin = Mean - SD,  # Calculate ymin
+      ymax = Mean + SD,  # Calculate ymax
+      # Create a new column for error bar color: red if ymin < 0, else black
+      error_bar_color = "black"
+    )
+
+  # Create the bar graph with error bars and no legend or individual axis labels
+  p <- ggplot(plot_data, aes(x = Condition, y = Mean, fill = Condition)) +
+    geom_bar(stat = "identity", position = position_dodge(), alpha = 0.8, width = 0.6, size = 1.2) +  # Thicker bars
+    # Modify geom_errorbar to use the color aesthetic based on "error_bar_color" and make it thicker
+    geom_errorbar(aes(ymin = ymin, ymax = ymax, color = error_bar_color), 
+                  position = position_dodge(width = 0.9), width = 0.4, size = 1.2) +  # Thicker error bars
+    scale_color_identity() +  # Use scale_color_identity() to apply custom colors directly
+    labs(title = paste(variable_name), y = y_label) +  # Include custom y-axis label and no x-axis label
+    theme_minimal() +
+    scale_fill_manual(values = c("Verbal Stimuli" = "#87CEEB", "Visual Stimuli" = "#FFD700")) +  # Lighter colors for better visibility
+    theme(
+      legend.position = "none",  # Remove the legend
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),  # Thicker and larger title
+      axis.title.x = element_blank(),  # Remove individual x-axis labels
+      axis.ticks.x = element_blank(),  # Remove x-axis ticks
+      axis.title.y = element_text(size = 14, face = "bold"),  # Thicker y-axis title
+      axis.text = element_text(size = 12, face = "bold"),  # Thicker axis text
+      panel.grid.major = element_line(size = 0.8),  # Thicker grid lines
+      panel.grid.minor = element_line(size = 0.6)   # Thicker minor grid lines
+    )
+
+}
+
+# Step 9: Define y-axis labels for each plot chronologically
+y_labels <- c("Count", "Count", "Millisecond", "Millisecond")  # Define labels for each plot in order
+
+# Create each plot with the respective y-axis label
+plot_list <- list()  # Create an empty list to store the plots
+
+for (i in seq_along(variable_list)) {
+  variable <- variable_list[i]
+  variable_results <- results_table1[results_table1$Variable == variable, ]
+
+  
+  # Generate the plot with the corresponding y-axis label
+  plot_list[[i]] <- plot_variable_with_legend(variable_results, variable, y_label = y_labels[i])
+}
+
+# Step 10: Combine the four plots into a 2x2 layout using patchwork
+if (length(plot_list) == 4) {
+  combined_plot <- (plot_list[[1]] + plot_list[[2]]) / (plot_list[[3]] + plot_list[[4]])
+
+  # Add shared x-axis label at the bottom
+  combined_plot <- combined_plot +
+    plot_annotation(
+      caption = "Scenario",
+      theme = theme(
+        plot.caption = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.margin = margin(t = 10, r = 10, b = 10, l = 10)
+      )
+    )
+
+  # Save the final plot as a PNG file for download
+  ggsave(filename = "final_combined_plot2.png", plot = combined_plot, width = 20, height = 16, dpi = 300)
+  
+  # Display the final combined plot
+  print(combined_plot)
+} 
+
+```
+
+
+H2:table
+```{r}
+
+# Step 1: Filter rows where `Info_Respondent_Name` appears exactly 4 times
+filtered_data <- combined_data %>%
+  group_by(Info_Respondent_Name) %>%
+  filter(n() == 4) %>%  # Keep only groups with exactly 4 occurrences
+  ungroup()             # Remove grouping to return a normal dataframe
+
+# Display the filtered data
+print(filtered_data)
+
+# Step 2: Ensure the specified columns in `filtered_data` are numeric and handle missing values
+filtered_data <- filtered_data %>%
+  mutate(across(all_of(variable_list), ~ suppressWarnings(as.numeric(.))))  # Convert variables to numeric
+
+# Step 3: Define the modified one-sample t-test function with renamed indexes
+perform_one_sample_t_test <- function(data, variable, mu = 0) {   
+  # Separate data into verbal and visual groups for the specified variable
+  verbal_data <- data %>%
+    filter(Info_Interval_Label == "verbal") %>%
+    pull(!!sym(variable))
+  
+  visual_data <- data %>%
+    filter(Info_Interval_Label == "visual") %>%
+    pull(!!sym(variable))
+
+  # Remove NA values from both groups
+  verbal_data <- verbal_data[!is.na(verbal_data)]
+  visual_data <- visual_data[!is.na(visual_data)]
+
+  # Check the number of valid observations in both groups
+  if (length(verbal_data) < 2 || length(visual_data) < 2) {
+    return(data.frame(Variable = variable, 
+                      Group = c(paste("Verbal", variable), 
+                                paste("Visual", variable)),
+                      Mean = c(mean(verbal_data, na.rm = TRUE), mean(visual_data, na.rm = TRUE)),
+                      SD = c(NA, NA),
+                      P_Value = c(NA, NA),
+                      T_Statistic = c(NA, NA)))
+  }
+
+  # Perform one-sample t-tests for verbal and visual groups separately against `mu`
+  verbal_t_test <- t.test(verbal_data, mu = mu)
+  visual_t_test <- t.test(visual_data, mu = mu)
+
+  # Create a row for the results table with renamed group identifiers
+  result <- data.frame(Variable = variable, 
+                      Group = c(paste("Verbal", variable), 
+                                paste("Visual", variable)),
+                       Mean = c(mean(verbal_data, na.rm = TRUE), mean(visual_data, na.rm = TRUE)),
+                       SD = c(sd(verbal_data, na.rm = TRUE), sd(visual_data, na.rm = TRUE)),
+                       P_Value = c(verbal_t_test$p.value, visual_t_test$p.value),
+                       T_Statistic = c(verbal_t_test$statistic, visual_t_test$statistic))
+  return(result)
+}
+
+# Step 5: Run the one-sample t-tests for each variable using the filtered data
+h2_results <- do.call(rbind, lapply(variable_list, function(var) perform_one_sample_t_test(filtered_data, var)))
+
+# Step 6: Display the final table of results
+h2_graph <- h2_results
+h2_graph <- h2_graph %>%
+  select(-Variable)
+# Apply formatC to all numeric columns in results_table
+h2_results <- h2_results %>%
+  mutate(across(where(is.numeric), ~ formatC(as.numeric(.), format = "g", digits = 4)))
+
+h2_results$Mean <- paste0(h2_results$Mean, " (",  h2_results$SD, ")")
+h2_results <- h2_results %>%
+  select(-Variable, -SD)
+
+print(h2_results)
+```
+H2: Tidy-up
+```{r}
+# Step 1: Convert `h2_results` to a long format with one row for each metric (Mean, SD, etc.)
+h2_pivot <- h2_results %>%
+  pivot_longer(cols = c(Mean, P_Value, T_Statistic), names_to = "Statistic", values_to = "Value") %>%
+  # Step 2: Use `pivot_wider()` to spread the Group values into separate columns
+  pivot_wider(names_from = Group, values_from = Value)
+
+h2_pivot <- h2_pivot %>%
+  mutate(Statistic = case_when(
+    Statistic == "T_Statistic" ~ "T statistics",       
+    Statistic == "P_Value" ~ "p value",           
+    Statistic == "Mean" ~ "Mean",  
+  ))
+# Display the restructured table
+h2_pivot <- h2_pivot %>%
+  column_to_rownames(var = "Statistic")
+
+print(h2_pivot)
+# Identify columns for "Verbal" and "Visual" groups
+verbal_columns <- grep("Verbal", colnames(h2_pivot), value = TRUE)  
+visual_columns <- grep("Visual", colnames(h2_pivot), value = TRUE) 
+
+# Create separate tables for Verbal and Visual
+verbal_group_table <- h2_pivot %>%
+  select(all_of(verbal_columns))  # Select only Verbal columns
+
+visual_group_table <- h2_pivot %>%
+  select(all_of(visual_columns))  # Select only Visual columns
+
+verbal_group_table <- verbal_group_table %>%
+  rename_with(~ gsub("Verbal ", "", .))  
+
+rownames(verbal_group_table)[rownames(verbal_group_table) == "Mean"] <- "Verbal Stimuli"
+
+visual_group_table <- visual_group_table %>%
+  rename_with(~ gsub("Visual ", "", .)) 
+rownames(visual_group_table)[rownames(visual_group_table) == "Mean"] <- "Visual Stimuli"
+
+print(verbal_group_table)
+print(visual_group_table)
+
+```
+```{r}
+print(h2_graph)
+verbal_table <- h2_graph %>%
+  filter(str_detect(Group, "Verbal"))%>%
+  mutate(Group = str_replace(Group, "Verbal", ""))
+
+# Step 2: Filter rows that contain "Visual" in the "Group" column
+visual_table <- h2_graph %>%
+  filter(str_detect(Group, "Visual"))%>%
+  mutate(Group = str_replace(Group, "Visual", ""))
+
+# Display the separate tables
+print("Verbal Group Table:")
+print(verbal_table)
+
+print("Visual Group Table:")
+print(visual_table)
+
+```
+
+H2: Graph
+```{r}
+plot_h2_variable <- function(verbal_row, visual_row, variable_name, y_label) {
+  # Create the data frame for plotting
+  plot_data <- data.frame(
+    Condition = c("Verbal Stimuli", "Visual Stimuli"),
+    Mean = c(as.numeric(verbal_row$Mean), as.numeric(visual_row$Mean)),
+    SD = c(as.numeric(verbal_row$SD), as.numeric(visual_row$SD))
+  )
+
+  # Calculate ymin and ymax for error bars
+  plot_data <- plot_data %>%
+    mutate(
+      ymin = Mean - SD,  # Calculate ymin
+      ymax = Mean + SD,  # Calculate ymax
+      error_bar_color = "black"  # Set error bar color to black
+    )
+
+  # Plot the bar graph
+  p <- ggplot(plot_data, aes(x = Condition, y = Mean, fill = Condition)) +
+    geom_bar(stat = "identity", position = position_dodge(), alpha = 0.8, width = 0.6, size = 1.2) +  
+    geom_errorbar(aes(ymin = ymin, ymax = ymax), color = "black", width = 0.4, size = 1.2) +
+    labs(title = variable_name, y = y_label) +
+    theme_minimal() +
+    scale_fill_manual(values = c("Verbal Stimuli" = "#87CEEB", "Visual Stimuli" = "#FFD700")) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 14, face = "bold"),
+      axis.text = element_text(size = 12, face = "bold")
+    )
+  
+  return(p)
+}
+# Create a list to store plots
+plot_list <- list()
+
+# Loop through the variables and generate plots
+for (i in seq_along(variable_list)) {
+  verbal_row <- verbal_table[i, ]
+  visual_row <- visual_table[i, ]
+  y_label <- y_labels[i]
+  plot_title <- variable_list[i]
+  plot_list[[i]] <- plot_h2_variable(verbal_row, visual_row, plot_title, y_label)
+}
+
+# Combine the plots using patchwork
+if (length(plot_list) == 4) {
+  combined_plot <- (plot_list[[1]] + plot_list[[2]]) / (plot_list[[3]] + plot_list[[4]]) +
+    plot_annotation(
+      caption = "Scenario",
+      theme = theme(
+        plot.caption = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.margin = margin(t = 10, r = 10, b = 10, l = 10)
+      )
+    )
+
+  # Save and print the final combined plot
+  ggsave("h2_combined_corrected.png", combined_plot, width = 20, height = 16, dpi = 300)
+  print(combined_plot)
+}
+
+
+```
+
+
