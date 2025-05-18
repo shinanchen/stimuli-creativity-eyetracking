@@ -1,0 +1,176 @@
+---
+title: "Hypothesis 3"
+output:
+  html_document: default
+date: "2024-12-24"
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(skimr)
+library(dplyr)
+library(ggplot2)
+library(lfe)
+library(AER)
+library(car)
+library(tidyverse)
+library(tidyr)
+library(plm)
+library(stringr)
+library(patchwork)
+library(readxl)
+
+
+
+```
+
+
+```{r}
+data <- read.csv("~/Desktop/pilot1/IndividualAOImetrics.csv", header = FALSE)
+data2 <- read.csv("~/Desktop/pilot1/IndividualAOImetrics (1).csv", header = FALSE)
+imotions <- read_excel("~/Desktop/pilot1/_id_imotions.xlsx")
+merged <- read.csv("~/Desktop/pilot1/merged_df.csv", header = FALSE)
+```
+
+
+```{r}
+colnames(data) <- as.character(unlist(data[2, ]))
+data <- data[-c(1, 2), ]
+colnames(data2) <- as.character(unlist(data2[2, ]))
+data2 <- data2[-c(1, 2), ]
+combined_data <- rbind(data, data2)
+
+# Step 5: Remove rows
+combined_data <- combined_data %>%
+  filter(!(Info_Respondent_Name %in% c("0024", "6632a7976ac65354ad468c94")))
+
+# Step 6: Convert necessary columns to numeric using mutate_at
+combined_data <- combined_data %>%
+  mutate_at(vars(AOI_FixationMetrics_DwellsFixations,
+                 AOI_FixationMetrics_FixationCount,
+                 AOI_FixationMetrics_DwellTimeFixationMs,
+                 AOI_FixationMetrics_DurationFixation),
+            ~ suppressWarnings(as.numeric(.)))
+
+# rename
+combined_data <- combined_data %>%
+  rename(
+    "Dwells After Fixations" = "AOI_FixationMetrics_DwellsFixations",
+    "Fixation Count" = "AOI_FixationMetrics_FixationCount",
+    "DwellTime Fixation (ms)" = "AOI_FixationMetrics_DwellTimeFixationMs",
+    "Average Duration Per Fixation (ms)" = "AOI_FixationMetrics_DurationFixation"
+  )
+
+imotions <- imotions %>%
+  rename(ID_Matched = `_id`)
+
+# Perform the swap operation
+# now everthing imotion has the same id as merged_df
+combined_data <- combined_data %>%
+  left_join(imotions, by = c("Info_Respondent_Name" = "ID")) %>% # Join to get `ID_Matched`
+  mutate(
+    Info_Respondent_Name = ifelse(!is.na(ID_Matched), ID_Matched, Info_Respondent_Name) # Replace if match
+  ) %>%
+  select(-ID_Matched) # Remove the temporary `ID_Matched` column
+
+print(combined_data)
+```
+
+take the differences in creativity score
+```{r}
+print(merged)
+create <- merged %>%
+  distinct(V5, .keep_all = TRUE) # Keep the first occurrence of each V5 value
+print(create)
+
+merged <- merged %>%
+  mutate(V8 = as.numeric(V8))
+
+# Compute difference between second and first value of V8
+df_diff <- merged %>%
+  group_by(V5) %>%
+  filter(row_number() %in% c(1,2)) %>%  # Keep only first 2 rows of each group
+  summarise(
+    V7 = first(V7),  # Keep the corresponding V7 of the first row
+    change_in_creativty = as.numeric(nth(V8, 2)) - as.numeric(first(V8)),  # Ensure numeric subtraction
+    .groups = "drop"
+  )
+
+# Print the resulting dataframe
+print(df_diff)
+
+
+# Print the resulting dataframe
+print(df_diff)
+
+```
+
+
+```{r}
+
+output <- combined_data %>%
+  left_join(df_diff, by = c("Info_Respondent_Name" = "V5"))
+
+# View the resulting dataset
+print(output)
+
+
+```
+Overall effect regardless the scenario
+```{r}
+filtered_data <- output %>%
+  filter(Info_Interval_Label %in% c("verbal", "visual")) %>%
+  select(`Dwells After Fixations`, `Fixation Count`, `DwellTime Fixation (ms)`,
+         `Average Duration Per Fixation (ms)`, V7, change_in_creativty, Info_Respondent_Name, Info_Interval_Label) %>%
+  drop_na() %>%
+  mutate(visual_stimuli = as.integer(V7 == "2"),  # Creates a dummy variable for V7 = "2"
+         verbal_stimuli = as.integer(V7 == "5"))  # Creates a dummy variable for V7 = "5"
+print(filtered_data)
+print(colnames(filtered_data))
+
+```
+```{r}
+# Run the regression model
+ols_model <- lm(
+  change_in_creativty ~ visual_stimuli,
+  data = filtered_data
+)
+
+# Display the summary of the regression
+summary(ols_model)
+
+
+
+```
+intercept is negative shows that with no help of AI, the creativity score of a participant will beisginifncatly lower
+```{r}
+ols_model1 <- lm(
+  change_in_creativty ~ `Dwells After Fixations` + `Fixation Count` + `DwellTime Fixation (ms)` + `Average Duration Per Fixation (ms)` +
+       verbal_stimuli, 
+  data = filtered_data
+)
+
+# Print summary of the model
+summary(ols_model1)
+```
+
+
+
+```{r}
+
+
+ols_model2 <- lm(
+  change_in_creativty ~ `Dwells After Fixations` + `Fixation Count` + `DwellTime Fixation (ms)` + `Average Duration Per Fixation (ms)` +
+       verbal_stimuli +
+       verbal_stimuli * `Dwells After Fixations` +
+       verbal_stimuli * `Fixation Count` +
+       verbal_stimuli * `DwellTime Fixation (ms)` +
+       verbal_stimuli * `Average Duration Per Fixation (ms)`,
+  data = filtered_data
+)
+
+# Print summary of the model
+summary(ols_model2)
+
+```
+
