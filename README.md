@@ -35,7 +35,7 @@ These metrics serve as **independent variables**, while the **dependent variable
 
 ## File Structure
 
-eye/ # Eye-tracking and creativity scores
+pilot1/ # Eye-tracking and creativity scores
 h1_and_h2.Rmd # T-tests for Hypotheses 1 and 2
 h3.Rmd # OLS regression for Hypothesis 3
 README.md # Project description (this file)
